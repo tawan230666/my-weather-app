@@ -1,4 +1,8 @@
+// OpenWeatherMap free-tier key. It is visible to anyone using a static site,
+// so it is limited to the free plan. A production app would call the API
+// through its own backend instead.
 const apiKey = '5d842ba0a15630b65e9421fe07cd1ebe';
+const HISTORY_KEY = 'weather-search-history';
 const searchForm = document.querySelector('#search-form');
 const cityInput = document.querySelector('#city-input');
 const weatherInfoContainer = document.querySelector('#weather-info-container');
@@ -6,8 +10,21 @@ const forecastContainer = document.querySelector('#forecast-container');
 const forecastGrid = document.querySelector('#forecast-grid');
 const searchHistory = document.querySelector('#search-history');
 
-// Search history management (using in-memory storage for Claude.ai)
-let searchHistoryData = [];
+// Search history (last 5 cities), kept between visits when storage is available
+let searchHistoryData = loadHistory();
+
+function loadHistory() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(HISTORY_KEY));
+        return Array.isArray(saved) ? saved.slice(0, 5) : [];
+    } catch (_) {
+        return [];
+    }
+}
+
+function saveHistory() {
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(searchHistoryData)); } catch (_) {}
+}
 
 searchForm.addEventListener('submit', (event) => {
     event.preventDefault();
@@ -39,7 +56,7 @@ async function getWeather(city) {
     weatherInfoContainer.innerHTML = `<p>กำลังโหลดข้อมูล... <span class="loading"></span></p>`;
     forecastContainer.style.display = 'none';
 
-    const apiUrl = `https://api.openweathermap.org/data/2.5/weather?q=${city}&appid=${apiKey}&units=metric&lang=th`;
+    const apiUrl = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${apiKey}&units=metric&lang=th`;
 
     try {
         const response = await fetch(apiUrl);
@@ -57,7 +74,7 @@ async function getWeather(city) {
 }
 
 async function getForecast(city) {
-    const forecastUrl = `https://api.openweathermap.org/data/2.5/forecast?q=${city}&appid=${apiKey}&units=metric&lang=th`;
+    const forecastUrl = `https://api.openweathermap.org/data/2.5/forecast?q=${encodeURIComponent(city)}&appid=${apiKey}&units=metric&lang=th`;
 
     try {
         const response = await fetch(forecastUrl);
@@ -89,7 +106,17 @@ function displayWeather(data) {
 }
 
 function displayForecast(data) {
-    const forecasts = data.list.filter((item, index) => index % 8 === 0).slice(0, 5);
+    // The API returns 3-hour steps; keep one reading per day, closest to midday
+    const byDay = new Map();
+    data.list.forEach(item => {
+        const day = item.dt_txt.slice(0, 10);
+        const hour = Number(item.dt_txt.slice(11, 13));
+        const current = byDay.get(day);
+        if (!current || Math.abs(hour - 12) < Math.abs(Number(current.dt_txt.slice(11, 13)) - 12)) {
+            byDay.set(day, item);
+        }
+    });
+    const forecasts = [...byDay.values()].slice(0, 5);
 
     let forecastHtml = '';
     forecasts.forEach((forecast, index) => {
@@ -143,6 +170,7 @@ function addToSearchHistory(city) {
     searchHistoryData = searchHistoryData.filter(item => item.toLowerCase() !== city.toLowerCase());
     searchHistoryData.unshift(city);
     searchHistoryData = searchHistoryData.slice(0, 5);
+    saveHistory();
 }
 
 function showSearchHistory() {
@@ -151,17 +179,24 @@ function showSearchHistory() {
         return;
     }
 
-    const historyHtml = searchHistoryData
-        .filter(city => city.toLowerCase().includes(cityInput.value.toLowerCase()))
-        .map(city => `<div class="search-history-item" onclick="selectHistoryItem('${city}')">${city}</div>`)
-        .join('');
+    const query = cityInput.value.toLowerCase();
+    const matches = searchHistoryData.filter(city => city.toLowerCase().includes(query));
 
-    if (historyHtml) {
-        searchHistory.innerHTML = historyHtml;
-        searchHistory.style.display = 'block';
-    } else {
+    searchHistory.replaceChildren();
+    if (matches.length === 0) {
         searchHistory.style.display = 'none';
+        return;
     }
+
+    // Build items with textContent so a saved city name can never inject HTML
+    matches.forEach(city => {
+        const item = document.createElement('div');
+        item.className = 'search-history-item';
+        item.textContent = city;
+        item.addEventListener('mousedown', () => selectHistoryItem(city));
+        searchHistory.appendChild(item);
+    });
+    searchHistory.style.display = 'block';
 }
 
 function hideSearchHistory() {
